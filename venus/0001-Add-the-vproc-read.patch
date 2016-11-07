@@ -1,0 +1,157 @@
+From 502f2611d7a77cf5c94bd6ff4b9af8dba21c6864 Mon Sep 17 00:00:00 2001
+From: Preeti U Murthy <preetium@andrew.cmu.edu>
+Date: Mon, 7 Nov 2016 22:09:48 +0530
+Subject: [PATCH] Add the vproc:read
+
+---
+ coda-src/kerndep/coda.h          |  8 ++++++++
+ coda-src/venus/vproc.h           |  1 +
+ coda-src/venus/vproc_vfscalls.cc | 36 ++++++++++++++++++++++++++++++++++++
+ coda-src/venus/worker.cc         | 32 ++++++++++++++++++++++++++++++++
+ 4 files changed, 77 insertions(+)
+
+diff --git a/coda-src/kerndep/coda.h b/coda-src/kerndep/coda.h
+index bbec8f2..f4e21ca 100644
+--- a/coda-src/kerndep/coda.h
++++ b/coda-src/kerndep/coda.h
+@@ -272,6 +272,7 @@ struct coda_statfs {
+ #define CODA_STORE	 35
+ #define CODA_RELEASE	 36
+ #define CODA_NCALLS 37
++#define CODA_READ_WRITE 38
+ 
+ #define DOWNCALL(opcode) (opcode >= CODA_REPLACE && opcode <= CODA_PURGEFID)
+ 
+@@ -329,6 +330,12 @@ struct coda_open_out {
+     ino_t	inode;
+ };
+ 
++/* coda_read_write: */
++struct coda_read_write_in {
++    struct coda_in_hdr ih;
++    struct CodaFid	Fid;
++    loff_t read_offset;
++};
+ 
+ /* coda_store: */
+ struct coda_store_in {
+@@ -694,6 +701,7 @@ union inputArgs {
+     struct coda_open_by_fd_in coda_open_by_fd;
+     struct coda_open_by_path_in coda_open_by_path;
+     struct coda_statfs_in coda_statfs;
++    struct coda_read_write_in coda_read_write;
+ };
+ 
+ union outputArgs {
+diff --git a/coda-src/venus/vproc.h b/coda-src/venus/vproc.h
+index 81d0e70..42ab900 100644
+--- a/coda-src/venus/vproc.h
++++ b/coda-src/venus/vproc.h
+@@ -226,6 +226,7 @@ class vproc : public olink {
+     void vget(struct venus_cnode *, struct cfid *, int what=RC_STATUS);
+     void open(struct venus_cnode *, int);
+     void close(struct venus_cnode *, int);
++    void read(struct venus_cnode *, long);
+     void ioctl(struct venus_cnode *, unsigned char nr, struct ViceIoctl *, int);
+     void select(struct venus_cnode *, int);
+     void getattr(struct venus_cnode *, struct coda_vattr *);
+diff --git a/coda-src/venus/vproc_vfscalls.cc b/coda-src/venus/vproc_vfscalls.cc
+index aba8e45..04961c5 100644
+--- a/coda-src/venus/vproc_vfscalls.cc
++++ b/coda-src/venus/vproc_vfscalls.cc
+@@ -231,6 +231,42 @@ FreeLocks:
+     }
+ }
+ 
++void vproc::read(struct venus_cnode *cp, long read_offset)
++{
++    LOG(1, ("vproc::read: fid = %s , offset=%lld\n", 
++	    FID_(&cp->c_fid), read_offset));
++
++    fsobj *f = 0;
++
++    //TODO: why is there a loop here ??
++    for (;;) {
++	Begin_VFS(&cp->c_fid, CODA_READ_WRITE, VM_OBSERVING);
++	if (u.u_error) break;
++
++	/* Get the object. */
++	u.u_error = FSDB->Get(&f, &cp->c_fid, u.u_uid, RC_DATA);
++	if (u.u_error) goto FreeLocks;
++
++
++    // We do not check for p ermissions
++
++    // TODO: What is required to be done here ??
++	/* Do the operation. */
++	/*u.u_error = f->Read(cp, u.u_uid);
++	if (u.u_error) goto FreeLocks;*/
++
++FreeLocks:
++	FSDB->Put(&f);
++	int retry_call = 0;
++	End_VFS(&retry_call);
++	if (!retry_call) break;
++    }
++
++    if (u.u_error == EINCONS) {
++	u.u_error = ENOENT;
++	k_Purge(&cp->c_fid, 1);
++    }
++}
+ 
+ void vproc::close(struct venus_cnode *cp, int flags) 
+ {
+diff --git a/coda-src/venus/worker.cc b/coda-src/venus/worker.cc
+index b10c992..8a11a5e 100644
+--- a/coda-src/venus/worker.cc
++++ b/coda-src/venus/worker.cc
+@@ -1424,6 +1424,37 @@ void worker::main(void)
+ 		break;
+ 		}
+ 
++	    case CODA_READ_WRITE:
++		{
++		LOG(100, ("CODA_READ_WRITE: u.u_pid = %d u.u_pgid = %d\n", u.u_pid, u.u_pgid)); 
++#ifdef __CYGWIN32__
++		char *slash;
++#endif
++                /* Remember some info for dealing with interrupted open calls */
++                /*TODO: How can this affect a read ?? */
++		saveFid = in->coda_read_write.Fid;
++		
++		MAKE_CNODE(vtarget, in->coda_open_by_path.Fid, 0);
++
++		read(&vtarget, in->coda_read_write.read_offset);
++		
++		if (u.u_error == 0) {
++		    MarinerReport(&vtarget.c_fid, u.u_uid);
++
++                    /*TODO: How to print out the file being read ?*/
++                    /*sprintf(begin, "%s%s/%s", CachePrefix, CacheDir, 
++                            vtarget.c_cf->Name());*/
++#ifdef __CYGWIN32__
++#endif
++                    LOG(100, ("CODA_READ_WRITE: attempted to read at offset %lld\n",
++                                    in->coda_read_write.read_offset));
++		} else {
++		    eprint("worker::main Got read write opcode %d", in->ih.opcode);
++		    eprint("worker::main Got read write offset %lld", in->coda_read_write.read_offset);
++        }
++		break;
++		}
++
+ 	    case CODA_READLINK: 
+ 		{
+ 		LOG(100, ("CODA_READLINK: u.u_pid = %d u.u_pgid = %d\n", u.u_pid, u.u_pgid));
+@@ -1517,6 +1548,7 @@ void worker::main(void)
+ 		break;
+                 }
+ 
++
+ 	    case CODA_STATFS:
+ 		{
+ 		statfs(&(out->coda_statfs.stat));
+-- 
+2.5.0
+
