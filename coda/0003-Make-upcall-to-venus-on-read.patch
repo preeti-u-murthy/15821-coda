@@ -1,0 +1,89 @@
+From a1f65481b9eb1f67f88abcf627015eec11dfc942 Mon Sep 17 00:00:00 2001
+From: Preeti U Murthy <preetium@andrew.cmu.edu>
+Date: Mon, 7 Nov 2016 19:57:18 +0530
+Subject: [PATCH 2/2] Make upcall to venus on read
+
+---
+ file.c   |  8 ++++++++
+ upcall.c | 30 +++++++++++++++++-------------
+ 2 files changed, 25 insertions(+), 13 deletions(-)
+
+diff --git a/file.c b/file.c
+index 4a7026b..7819bb3 100644
+--- a/file.c
++++ b/file.c
+@@ -31,8 +31,10 @@ static ssize_t
+ coda_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
+ {
+ 	struct file *coda_file = iocb->ki_filp;
++	struct inode *coda_inode = file_inode(coda_file);
+ 	struct coda_file_info *cfi = CODA_FTOC(coda_file);
+     ssize_t size;
++    loff_t read_offset;
+     
+     /* Test for 15-821 project */
+     printk("coda_read\n");
+@@ -40,6 +42,12 @@ coda_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
+ 	BUG_ON(!cfi || cfi->cfi_magic != CODA_MAGIC);
+ 
+     printk("The read is at offset %lld, #bytes read = %ld", iocb->ki_pos, iov_iter_count(to));
++
++    read_offset = iocb->ki_pos + iov_iter_count(to);
++    int err = venus_read_write(coda_inode->i_sb, coda_i2f(coda_inode), read_offset);
++    if (err) {
++           printk("venus read write error %d\n", err); 
++    }
+     size = vfs_iter_read(cfi->cfi_container, to, &iocb->ki_pos);
+     return size;
+ }
+diff --git a/upcall.c b/upcall.c
+index 978bebc..8ddcca8 100644
+--- a/upcall.c
++++ b/upcall.c
+@@ -156,19 +156,6 @@ int venus_lookup(struct super_block *sb, struct CodaFid *fid,
+ 	return error;
+ }
+ 
+-int venus_read(struct super_block *sb)
+-{
+-	union inputArgs *inp;
+-	union outputArgs *outp;
+-	int insize, outsize, error;
+-
+-	insize = SIZE(release);
+-    UPARG(CODA_READ);
+-
+-    error = coda_upcall(coda_vcp(sb), insize, &outsize, inp);
+-    return error;
+-}
+-
+ int venus_close(struct super_block *sb, struct CodaFid *fid, int flags,
+ 		kuid_t uid)
+ {
+@@ -210,6 +197,23 @@ int venus_open(struct super_block *sb, struct CodaFid *fid,
+ 	return error;
+ }	
+ 
++int venus_read_write(struct super_block *sb, struct CodaFid *fid,
++                        loff_t read_offset)
++{
++    union inputArgs *inp;
++    union outputArgs *outp;
++    int insize, outsize, error;
++
++    insize = INSIZE(read_write);
++    UPARG(CODA_READ_WRITE);
++    inp->coda_read_write.read_offset = read_offset;
++    inp->coda_read_write.VFid = *fid;
++    
++    error = coda_upcall(coda_vcp(sb), insize, &outsize, inp);
++    CODA_FREE(inp, insize);
++    return error;
++}
++
+ int venus_mkdir(struct super_block *sb, struct CodaFid *dirfid, 
+ 		   const char *name, int length, 
+ 		   struct CodaFid *newfid, struct coda_vattr *attrs)
+-- 
+2.5.0
+
