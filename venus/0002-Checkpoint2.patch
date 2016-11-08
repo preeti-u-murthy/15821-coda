@@ -1,0 +1,136 @@
+From 897198b444dec16a75a22d88cc63ec3254a4c442 Mon Sep 17 00:00:00 2001
+From: Preeti U Murthy <preetium@andrew.cmu.edu>
+Date: Tue, 8 Nov 2016 03:11:17 +0530
+Subject: [PATCH 2/2] Checkpoint2
+
+---
+ coda-src/venus/fso.h             |  6 +++---
+ coda-src/venus/fso0.cc           |  4 ++--
+ coda-src/venus/fso_cfscalls0.cc  | 15 ++++++++++++---
+ coda-src/venus/vproc_vfscalls.cc |  3 ++-
+ 4 files changed, 19 insertions(+), 9 deletions(-)
+
+diff --git a/coda-src/venus/fso.h b/coda-src/venus/fso.h
+index a3291f2..fe8d01c 100644
+--- a/coda-src/venus/fso.h
++++ b/coda-src/venus/fso.h
+@@ -214,7 +214,7 @@ class fsdb {
+     /* rcode arg added for local repair */
+     int Get(fsobj **fso, VenusFid *fid, uid_t uid, int rights,
+ 	    const char *comp=NULL, VenusFid *parent=NULL, int *rcode=NULL,
+-	    int GetInconsistent=0);
++	    int GetInconsistent=0, int want=1);
+     void Put(fsobj **);
+     void Flush();
+     void Flush(Volid *);
+@@ -617,7 +617,7 @@ class fsobj {
+ 
+   public:
+     /* The public CFS interface (Vice portion). */
+-    int Fetch(uid_t);
++    int Fetch(uid_t, int want=-1);
+     int GetAttr(uid_t, RPC2_BoundedBS * =0);
+     int GetACL(RPC2_BoundedBS *, uid_t);
+     int Store(unsigned long, Date_t, uid_t);
+@@ -769,7 +769,7 @@ void FSOD_ReclaimFSOs(void);
+ #define	BUSY(f)		((f)->refcnt > 0 || EXECUTING(f))
+ #define	HOARDABLE(f)	((f)->HoardPri > 0)
+ #define	FETCHABLE(f)	(!DYING(f) && REACHABLE(f) && !DIRTY(f) && \
+-			 (!HAVESTATUS(f) || !ACTIVE(f)) && !f->IsLocalObj())
++			 (!HAVESTATUS(f) || (PARTIALDATA(f)) || (!ACTIVE(f))) && !f->IsLocalObj())
+ /* we are replaceable whenever we are linked into FSDB->prioq */
+ #define	REPLACEABLE(f)	((f)->prio_handle.tree() != 0)
+ #define	GCABLE(f)	(DYING(f) && !DIRTY(f) && !BUSY(f))
+diff --git a/coda-src/venus/fso0.cc b/coda-src/venus/fso0.cc
+index d563093..393e13e 100644
+--- a/coda-src/venus/fso0.cc
++++ b/coda-src/venus/fso0.cc
+@@ -495,7 +495,7 @@ fsobj *fsdb::Create(VenusFid *key, int priority, const char *comp,
+  */
+ int fsdb::Get(fsobj **f_addr, VenusFid *key, uid_t uid, int rights,
+ 	      const char *comp, VenusFid *parent, int *rcode,
+-	      int GetInconsistent)
++	      int GetInconsistent, int want)
+ {
+     int getdata = (rights & RC_DATA);
+     int code = 0;
+@@ -753,7 +753,7 @@ RestartFind:
+ 		/* first try the LookAside cache */
+ 		if (!f->LookAside()) {
+ 		  /* Let fsobj::Fetch go ahead and fetch the object */
+-		  code = f->Fetch(uid);
++		  code = f->Fetch(uid, want);
+ 		}
+ 		
+ 		/* Restart operation in case of inconsistency. */
+diff --git a/coda-src/venus/fso_cfscalls0.cc b/coda-src/venus/fso_cfscalls0.cc
+index 8847e9a..02ed907 100644
+--- a/coda-src/venus/fso_cfscalls0.cc
++++ b/coda-src/venus/fso_cfscalls0.cc
+@@ -180,7 +180,7 @@ int fsobj::LookAside(void)
+ }
+ 
+ 
+-int fsobj::Fetch(uid_t uid)
++int fsobj::Fetch(uid_t uid, int want)
+ {
+     int fd = -1;
+ 
+@@ -224,6 +224,7 @@ int fsobj::Fetch(uid_t uid)
+ 
+     long offset = IsFile() ? cf.ValidData() : 0;
+     GotThisData = 0;
++    long cbtemp = cbbreaks;
+ 
+     /* C++ 3.0 whines if the following decls moved closer to use  -- Satya */
+     {
+@@ -243,6 +244,15 @@ int fsobj::Fetch(uid_t uid)
+ 	    sei->ByteQuota = -1;
+ 	    switch(stat.VnodeType) {
+ 		case File:
++            if (want == -1) {
++                sei->ByteQuota = -1;
++            } else if (want <= offset) {
++	            Recov_EndTrans(CMFP);
++                goto Exit;
++            } else {
++                sei->ByteQuota = want - offset;
++            }
++
+                     /* and open the containerfile */
+ 		    fd = GetContainerFD();
+ 		    CODA_ASSERT(fd != -1);
+@@ -297,8 +307,6 @@ int fsobj::Fetch(uid_t uid)
+ 	Recov_EndTrans(CMFP);
+     }
+ 
+-    long cbtemp = cbbreaks;
+-
+     if (vol->IsReplicated()) {
+         mgrpent *m = 0;
+ 	int asy_resolve = 0;
+@@ -482,6 +490,7 @@ NonRepExit:
+ 	PutConn(&c);
+     }
+ 
++Exit:
+     if (fd != -1)
+         data.file->Close(fd);
+ 
+diff --git a/coda-src/venus/vproc_vfscalls.cc b/coda-src/venus/vproc_vfscalls.cc
+index 425f518..eaa0744 100644
+--- a/coda-src/venus/vproc_vfscalls.cc
++++ b/coda-src/venus/vproc_vfscalls.cc
+@@ -184,7 +184,8 @@ void vproc::open(struct venus_cnode *cp, int flags)
+ 	if (u.u_error) break;
+ 
+ 	/* Get the object. */
+-	u.u_error = FSDB->Get(&f, &cp->c_fid, u.u_uid, RC_STATUS);
++	u.u_error = FSDB->Get(&f, &cp->c_fid, u.u_uid, RC_DATA,
++                            NULL, NULL, NULL, 0, 0);
+ 	if (u.u_error) goto FreeLocks;
+ 
+ 	if (exclp) { 
+-- 
+2.5.0
+

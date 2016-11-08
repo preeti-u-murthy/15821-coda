@@ -1,0 +1,25 @@
+From 9556bfffcedee2056c65ad8a61064efbd34c92ba Mon Sep 17 00:00:00 2001
+From: Preeti U Murthy <preetium@andrew.cmu.edu>
+Date: Tue, 8 Nov 2016 01:00:48 +0530
+Subject: [PATCH 1/2] Change RC_DATA to RC_STATUS in open()
+
+---
+ coda-src/venus/vproc_vfscalls.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/coda-src/venus/vproc_vfscalls.cc b/coda-src/venus/vproc_vfscalls.cc
+index 04961c5..425f518 100644
+--- a/coda-src/venus/vproc_vfscalls.cc
++++ b/coda-src/venus/vproc_vfscalls.cc
+@@ -184,7 +184,7 @@ void vproc::open(struct venus_cnode *cp, int flags)
+ 	if (u.u_error) break;
+ 
+ 	/* Get the object. */
+-	u.u_error = FSDB->Get(&f, &cp->c_fid, u.u_uid, RC_DATA);
++	u.u_error = FSDB->Get(&f, &cp->c_fid, u.u_uid, RC_STATUS);
+ 	if (u.u_error) goto FreeLocks;
+ 
+ 	if (exclp) { 
+-- 
+2.5.0
+
