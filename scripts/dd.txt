@@ -1,0 +1,1 @@
+dd if=/dev/urandom of=/coda/vm038.elijah.cs.cmu.edu/random_big.bin bs=1M count=20

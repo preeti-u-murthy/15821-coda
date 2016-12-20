@@ -1,0 +1,1 @@
+ffmpeg -i ~/Downloads/SampleVideo_1280x720_5mb.mp4 -vcodec copy -acodec copy -f mpegts -bsf:v h264_mp4toannexb /tmp/SampleVideo_1280x720_5mb.ts
